@@ -1,0 +1,60 @@
+# Every push to main and every pull request:
+#   test    types, integration and the OpenTUI e2e on Linux, against the Docker PostgreSQL
+#   gpuix   the GPUIX e2e on macOS, in its window (experimental: runners have no real GPU)
+#   build   the macOS and Windows executables (build.yml)
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - name: PostgreSQL with pagila and catalogo
+        run: bun run db:up
+      - run: bun test test/db.test.ts
+      - name: OpenTUI e2e
+        run: bun test test/e2e.test.ts -t OpenTUI
+
+  gpuix:
+    runs-on: macos-latest
+    # GPUIX draws with Metal; whether a hosted runner can is not guaranteed.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: PostgreSQL with pagila (Homebrew; no Docker on macOS runners)
+        run: |
+          brew install postgresql@18 pgvector
+          bin="$(brew --prefix postgresql@18)/bin"
+          echo qtty > "$RUNNER_TEMP/pw"
+          "$bin/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=scram-sha-256 --pwfile="$RUNNER_TEMP/pw"
+          "$bin/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 54329 -k $RUNNER_TEMP" -l "$RUNNER_TEMP/pg.log" -w start
+          bun scripts/db-up.ts --files-only
+          export PGPASSWORD=qtty
+          "$bin/createdb" -h 127.0.0.1 -p 54329 -U postgres pagila
+          for file in docker/initdb/10-pagila-schema.sql docker/initdb/11-pagila-data.sql; do
+            "$bin/psql" -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 54329 -U postgres -d pagila -f "$file"
+          done
+      - name: GPUIX and OpenTUI e2e
+        run: bun test test/e2e.test.ts
+
+  build:
+    uses: ./.github/workflows/build.yml

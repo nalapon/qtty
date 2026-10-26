@@ -1,0 +1,10 @@
+node_modules/
+# Local Compose files are not published.
+*compose*.yml
+*compose*.yaml
+# Downloaded by `bun run db:up`
+docker/initdb/1*-pagila-*.sql
+.stryker-tmp/
+reports/
+dist/
+.*.bun-build

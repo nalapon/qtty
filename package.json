@@ -1,0 +1,34 @@
+{
+  "name": "qtty",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "NODE_ENV=production bun src/main.ts",
+    "build": "bun scripts/build.ts",
+    "install:local": "bun run build && bun scripts/install.ts",
+    "build:windows": "bun install --frozen-lockfile --os=win32 --cpu=x64 && bun scripts/build.ts --windows",
+    "window": "NODE_ENV=production bun src/main.ts --window",
+    "db:up": "bun scripts/db-up.ts",
+    "db:down": "docker stop qtty-postgres-1",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:mutation": "stryker run"
+  },
+  "dependencies": {
+    "@effect/atom-react": "4.0.6",
+    "@effect/sql-pg": "4.0.6",
+    "@gpuix/native": "0.11.0",
+    "@gpuix/react": "0.11.0",
+    "@opentui/core": "0.7.0",
+    "@opentui/react": "0.7.0",
+    "effect": "4.0.6",
+    "react": "19.3.1"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "10.1.1",
+    "@types/bun": "1.4.4",
+    "@types/react": "19.3.0",
+    "typescript": "7.0.2"
+  }
+}

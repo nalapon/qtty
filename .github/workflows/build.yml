@@ -1,0 +1,100 @@
+# Compiles the macOS (Apple Silicon) and Windows (x64) executables, checks that each
+# loads its interfaces (`--version`), and uploads them as artifacts. Called by ci.yml
+# and release.yml.
+#
+# Signing runs only when its secrets exist (see README, "Publicar una versión"):
+#   macOS    MACOS_CERTIFICATE (Developer ID .p12, base64), MACOS_CERTIFICATE_PASSWORD,
+#            MACOS_SIGNING_IDENTITY, APPLE_API_KEY (.p8, base64), APPLE_API_KEY_ID, APPLE_API_ISSUER
+#   Windows  WINDOWS_CERTIFICATE (.pfx, base64), WINDOWS_CERTIFICATE_PASSWORD
+
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      sign:
+        description: Sign (and notarize) the executables when the secrets exist.
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            file: qtty
+            artifact: qtty-macos-arm64
+            interfaces: gpuix, opentui
+          - os: windows-latest
+            file: qtty.exe
+            artifact: qtty-windows-x64.exe
+            interfaces: opentui
+    runs-on: ${{ matrix.os }}
+    env:
+      # A step's `if` cannot see secrets; these say whether signing can run.
+      MACOS_SIGNING: ${{ inputs.sign && secrets.MACOS_CERTIFICATE != '' }}
+      WINDOWS_SIGNING: ${{ inputs.sign && secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+
+      - name: Check the executable loads its interfaces
+        shell: bash
+        run: |
+          out="$(./dist/${{ matrix.file }} --version)"
+          echo "$out"
+          [[ "$out" == *"(${{ matrix.interfaces }})"* ]]
+
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS' && env.MACOS_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          codesign --force --timestamp --options runtime --entitlements scripts/entitlements.plist --sign "$MACOS_SIGNING_IDENTITY" dist/qtty
+          codesign --verify --strict --verbose=2 dist/qtty
+          # A bare executable cannot be stapled: macOS checks the notarization online on first run.
+          echo "$APPLE_API_KEY" | base64 --decode > "$RUNNER_TEMP/api-key.p8"
+          ditto -c -k dist/qtty "$RUNNER_TEMP/qtty.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/qtty.zip" --key "$RUNNER_TEMP/api-key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait
+
+      - name: Sign (Windows)
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "certificate.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\qtty.exe
+          & $signtool.FullName verify /pa dist\qtty.exe
+
+      - name: Name the executable for its platform
+        shell: bash
+        run: mv "dist/${{ matrix.file }}" "dist/${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error

@@ -1,0 +1,35 @@
+# Pushing a tag like v0.1.0 builds both executables (signed when the secrets exist)
+# and publishes them as a GitHub Release. The tag must match package.json's version.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      sign: true
+    secrets: inherit
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: The tag matches package.json
+        run: |
+          version="$(jq -r .version package.json)"
+          [ "${GITHUB_REF_NAME}" = "v${version}" ] || { echo "El tag ${GITHUB_REF_NAME} no coincide con package.json (${version})"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/qtty-macos-arm64 dist/qtty-windows-x64.exe --title "qtty $GITHUB_REF_NAME" --generate-notes
